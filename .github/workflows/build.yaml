@@ -20,8 +20,17 @@ jobs:
         with:
           channel: stable
 
+      - name: Generate Android project files
+        run: flutter create . --platforms=android
+
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Build Android APK
-        run: flutter build apk --debug
+      - name: Build APK
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: dayMate-APK
+          path: build/app/outputs/flutter-apk/app-release.apk
