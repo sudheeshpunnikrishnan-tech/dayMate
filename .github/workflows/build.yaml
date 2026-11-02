@@ -1,10 +1,8 @@
-name: Flutter Android Build
+name: Build Android APK
 
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
@@ -12,25 +10,33 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: '17'
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          channel: 'stable'
+          cache: true
 
-      - name: Generate Android project files
-        run: flutter create . --platforms=android
+      - name: Generate Android Scaffolding
+        run: |
+          flutter create --org com.spinfotech --project-name sp_daymate .
 
-      - name: Install dependencies
+      - name: Install Dependencies
         run: flutter pub get
 
-      - name: Build APK
-        run: flutter build apk --release
+      - name: Build Android Debug APK
+        run: flutter build apk --debug
 
-      - name: Upload APK
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: dayMate-APK
-          path: build/app/outputs/flutter-apk/app-release.apk
+          name: DayMate-Debug-APK
+          path: build/app/outputs/flutter-apk/app-debug.apk
