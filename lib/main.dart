@@ -1,34 +1,132 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:timezone/data/latest.dart' as tz;
+import 'package:timezone/timezone.dart' as tz;
 
-void main() {
+final notifications = FlutterLocalNotificationsPlugin();
+
+Future<void> initializeNotifications() async {
+  tz.initializeTimeZones();
+
+  final localTimezone = await FlutterTimezone.getLocalTimezone();
+  tz.setLocalLocation(tz.getLocation(localTimezone.name));
+
+  const settings = InitializationSettings(
+    android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+  );
+
+  await notifications.initialize(settings);
+
+  final android = notifications.resolvePlatformSpecificImplementation<
+      AndroidFlutterLocalNotificationsPlugin>();
+  await android?.requestNotificationsPermission();
+}
+
+Future<void> scheduleReminder({
+  required int id,
+  required String title,
+  required DateTime dateTime,
+}) async {
+  if (!dateTime.isAfter(DateTime.now())) return;
+
+  await notifications.zonedSchedule(
+    id,
+    'dayMate reminder',
+    title,
+    tz.TZDateTime.from(dateTime, tz.local),
+    const NotificationDetails(
+      android: AndroidNotificationDetails(
+        'daymate_reminders',
+        'dayMate reminders',
+        channelDescription: 'Planner reminders from dayMate',
+        importance: Importance.high,
+        priority: Priority.high,
+      ),
+    ),
+    androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+  );
+}
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await initializeNotifications();
   runApp(const DayMateApp());
 }
 
-class DayMateApp extends StatelessWidget {
+class DayMateApp extends StatefulWidget {
   const DayMateApp({super.key});
+
+  @override
+  State<DayMateApp> createState() => _DayMateAppState();
+}
+
+class _DayMateAppState extends State<DayMateApp> {
+  ThemeMode themeMode = ThemeMode.light;
+
+  @override
+  void initState() {
+    super.initState();
+    loadTheme();
+  }
+
+  Future<void> loadTheme() async {
+    final prefs = await SharedPreferences.getInstance();
+    final isDark = prefs.getBool('isDarkTheme') ?? false;
+    if (mounted) {
+      setState(() => themeMode = isDark ? ThemeMode.dark : ThemeMode.light);
+    }
+  }
+
+  Future<void> toggleTheme() async {
+    final isDark = themeMode != ThemeMode.dark;
+    setState(() => themeMode = isDark ? ThemeMode.dark : ThemeMode.light);
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('isDarkTheme', isDark);
+  }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'dayMate',
       debugShowCheckedModeBanner: false,
+      themeMode: themeMode,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(0xFF167D78),
+          brightness: Brightness.light,
         ),
         useMaterial3: true,
       ),
-      home: const DayMateHome(),
+      darkTheme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF64C9BE),
+          brightness: Brightness.dark,
+        ),
+        useMaterial3: true,
+      ),
+      home: DayMateHome(
+        isDark: themeMode == ThemeMode.dark,
+        onThemeToggle: toggleTheme,
+      ),
     );
   }
 }
 
 class DayMateHome extends StatefulWidget {
-  const DayMateHome({super.key});
+  const DayMateHome({
+    super.key,
+    required this.isDark,
+    required this.onThemeToggle,
+  });
+
+  final bool isDark;
+  final VoidCallback onThemeToggle;
 
   @override
   State<DayMateHome> createState() => _DayMateHomeState();
@@ -38,20 +136,13 @@ class _DayMateHomeState extends State<DayMateHome> {
   int selectedTab = 0;
   bool isLoading = true;
 
-  final List<Map<String, dynamic>> tasks = [];
-  final List<Map<String, dynamic>> plans = [];
-  final List<Map<String, dynamic>> notes = [];
-  final List<Map<String, dynamic>> expenses = [];
-  final List<Map<String, dynamic>> habits = [];
+  final tasks = <Map<String, dynamic>>[];
+  final plans = <Map<String, dynamic>>[];
+  final notes = <Map<String, dynamic>>[];
+  final expenses = <Map<String, dynamic>>[];
+  final habits = <Map<String, dynamic>>[];
 
-  final List<String> titles = [
-    'Home',
-    'Tasks',
-    'Planner',
-    'Notes',
-    'Expenses',
-    'Habits',
-  ];
+  final titles = ['Home', 'Tasks', 'Planner', 'Notes', 'Expenses', 'Habits'];
 
   @override
   void initState() {
@@ -65,7 +156,6 @@ class _DayMateHomeState extends State<DayMateHome> {
     List<Map<String, dynamic>> readItems(String key) {
       final raw = prefs.getString(key);
       if (raw == null) return [];
-
       try {
         return (jsonDecode(raw) as List)
             .map((item) => Map<String, dynamic>.from(item as Map))
@@ -76,30 +166,18 @@ class _DayMateHomeState extends State<DayMateHome> {
     }
 
     if (!mounted) return;
-
     setState(() {
-      tasks
-        ..clear()
-        ..addAll(readItems('tasks'));
-      plans
-        ..clear()
-        ..addAll(readItems('plans'));
-      notes
-        ..clear()
-        ..addAll(readItems('notes'));
-      expenses
-        ..clear()
-        ..addAll(readItems('expenses'));
-      habits
-        ..clear()
-        ..addAll(readItems('habits'));
+      tasks.addAll(readItems('tasks'));
+      plans.addAll(readItems('plans'));
+      notes.addAll(readItems('notes'));
+      expenses.addAll(readItems('expenses'));
+      habits.addAll(readItems('habits'));
       isLoading = false;
     });
   }
 
   Future<void> saveData() async {
     final prefs = await SharedPreferences.getInstance();
-
     await prefs.setString('tasks', jsonEncode(tasks));
     await prefs.setString('plans', jsonEncode(plans));
     await prefs.setString('notes', jsonEncode(notes));
@@ -107,7 +185,7 @@ class _DayMateHomeState extends State<DayMateHome> {
     await prefs.setString('habits', jsonEncode(habits));
   }
 
-  List<Map<String, dynamic>> currentItems() {
+  List<Map<String, dynamic>> selectedItems() {
     switch (selectedTab) {
       case 1:
         return tasks;
@@ -128,9 +206,11 @@ class _DayMateHomeState extends State<DayMateHome> {
     final titleController = TextEditingController();
     final amountController = TextEditingController();
     DateTime selectedDate = DateTime.now();
+    TimeOfDay selectedTime = TimeOfDay.now();
+    bool addReminder = true;
 
-    final isExpense = selectedTab == 4;
     final isPlanner = selectedTab == 2;
+    final isExpense = selectedTab == 4;
 
     final result = await showDialog<bool>(
       context: context,
@@ -146,7 +226,6 @@ class _DayMateHomeState extends State<DayMateHome> {
                   autofocus: true,
                   decoration: InputDecoration(
                     labelText: isExpense ? 'Expense description' : 'Title',
-                    hintText: isExpense ? 'e.g. Groceries' : 'Enter title',
                   ),
                   textCapitalization: TextCapitalization.sentences,
                 ),
@@ -171,12 +250,35 @@ class _DayMateHomeState extends State<DayMateHome> {
                       final picked = await showDatePicker(
                         context: context,
                         initialDate: selectedDate,
-                        firstDate: DateTime(2020),
+                        firstDate: DateTime.now().subtract(
+                          const Duration(days: 1),
+                        ),
                         lastDate: DateTime(2100),
                       );
                       if (picked != null) {
                         setDialogState(() => selectedDate = picked);
                       }
+                    },
+                  ),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.access_time),
+                    label: Text(selectedTime.format(context)),
+                    onPressed: () async {
+                      final picked = await showTimePicker(
+                        context: context,
+                        initialTime: selectedTime,
+                      );
+                      if (picked != null) {
+                        setDialogState(() => selectedTime = picked);
+                      }
+                    },
+                  ),
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Notify me'),
+                    value: addReminder,
+                    onChanged: (value) {
+                      setDialogState(() => addReminder = value ?? false);
                     },
                   ),
                 ],
@@ -199,7 +301,6 @@ class _DayMateHomeState extends State<DayMateHome> {
 
     final title = titleController.text.trim();
     final amount = double.tryParse(amountController.text.trim()) ?? 0;
-
     titleController.dispose();
     amountController.dispose();
 
@@ -211,40 +312,55 @@ class _DayMateHomeState extends State<DayMateHome> {
       'createdAt': DateTime.now().toIso8601String(),
     };
 
-    if (isExpense) {
-      item['amount'] = amount;
-    }
+    if (isExpense) item['amount'] = amount;
+
     if (isPlanner) {
-      item['date'] = DateFormat('yyyy-MM-dd').format(selectedDate);
+      final dateTime = DateTime(
+        selectedDate.year,
+        selectedDate.month,
+        selectedDate.day,
+        selectedTime.hour,
+        selectedTime.minute,
+      );
+
+      item['dateTime'] = dateTime.toIso8601String();
+      item['reminder'] = addReminder;
+
+      if (addReminder && dateTime.isAfter(DateTime.now())) {
+        final id = dateTime.millisecondsSinceEpoch.remainder(2147483647);
+        await scheduleReminder(id: id, title: title, dateTime: dateTime);
+      }
     }
 
-    setState(() {
-      currentItems().add(item);
-    });
+    setState(() => selectedItems().add(item));
     await saveData();
   }
 
   Future<void> deleteItem(int index) async {
-    setState(() {
-      currentItems().removeAt(index);
-    });
+    final items = selectedItems();
+    final item = items[index];
+
+    if (selectedTab == 2 && item['dateTime'] != null) {
+      final dateTime = DateTime.tryParse(item['dateTime'].toString());
+      if (dateTime != null) {
+        final id = dateTime.millisecondsSinceEpoch.remainder(2147483647);
+        await notifications.cancel(id);
+      }
+    }
+
+    setState(() => items.removeAt(index));
     await saveData();
   }
 
   Future<void> toggleDone(int index, bool? value) async {
-    setState(() {
-      currentItems()[index]['done'] = value ?? false;
-    });
+    setState(() => selectedItems()[index]['done'] = value ?? false);
     await saveData();
   }
 
   Widget buildItems() {
-    final items = currentItems();
-
+    final items = selectedItems();
     if (items.isEmpty) {
-      return const Center(
-        child: Text('Nothing here yet. Tap + to add something.'),
-      );
+      return const Center(child: Text('Nothing here yet. Tap + to add.'));
     }
 
     return ListView.builder(
@@ -252,15 +368,15 @@ class _DayMateHomeState extends State<DayMateHome> {
       itemCount: items.length,
       itemBuilder: (context, index) {
         final item = items[index];
-        final title = item['title']?.toString() ?? '';
         final isCheckable = selectedTab == 1 || selectedTab == 5;
         final isDone = item['done'] == true;
-
         String subtitle = '';
-        if (selectedTab == 2 && item['date'] != null) {
-          final date = DateTime.tryParse(item['date'].toString());
-          if (date != null) {
-            subtitle = DateFormat('EEE, d MMM yyyy').format(date);
+
+        if (selectedTab == 2 && item['dateTime'] != null) {
+          final dateTime = DateTime.tryParse(item['dateTime'].toString());
+          if (dateTime != null) {
+            subtitle = DateFormat('EEE, d MMM · h:mm a').format(dateTime);
+            if (item['reminder'] == true) subtitle += ' · Reminder set';
           }
         } else if (selectedTab == 4) {
           final amount = (item['amount'] as num?)?.toDouble() ?? 0;
@@ -276,7 +392,7 @@ class _DayMateHomeState extends State<DayMateHome> {
                   )
                 : Icon(
                     selectedTab == 2
-                        ? Icons.event_outlined
+                        ? Icons.event
                         : selectedTab == 3
                             ? Icons.notes
                             : selectedTab == 4
@@ -284,15 +400,15 @@ class _DayMateHomeState extends State<DayMateHome> {
                                 : Icons.circle_outlined,
                   ),
             title: Text(
-              title,
+              item['title']?.toString() ?? '',
               style: TextStyle(
-                decoration:
-                    isCheckable && isDone ? TextDecoration.lineThrough : null,
+                decoration: isCheckable && isDone
+                    ? TextDecoration.lineThrough
+                    : null,
               ),
             ),
             subtitle: subtitle.isEmpty ? null : Text(subtitle),
             trailing: IconButton(
-              tooltip: 'Delete',
               icon: const Icon(Icons.delete_outline),
               onPressed: () => deleteItem(index),
             ),
@@ -302,8 +418,7 @@ class _DayMateHomeState extends State<DayMateHome> {
     );
   }
 
-  Widget buildDashboard() {
-    final completed = tasks.where((item) => item['done'] == true).length;
+  Widget dashboard() {
     final totalExpenses = expenses.fold<double>(
       0,
       (sum, item) => sum + ((item['amount'] as num?)?.toDouble() ?? 0),
@@ -316,56 +431,13 @@ class _DayMateHomeState extends State<DayMateHome> {
           'Your day, organized.',
           style: Theme.of(context).textTheme.headlineSmall,
         ),
-        const SizedBox(height: 6),
-        const Text('A little progress every day adds up.'),
-        const SizedBox(height: 20),
-        Row(
-          children: [
-            Expanded(
-              child: _StatCard(label: 'Tasks', value: '${tasks.length}'),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: _StatCard(label: 'Completed', value: '$completed'),
-            ),
-          ],
-        ),
-        const SizedBox(height: 10),
-        Row(
-          children: [
-            Expanded(
-              child: _StatCard(label: 'Notes', value: '${notes.length}'),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: _StatCard(label: 'Habits', value: '${habits.length}'),
-            ),
-          ],
-        ),
-        const SizedBox(height: 10),
-        _StatCard(
-          label: 'Total expenses',
-          value: '₹${totalExpenses.toStringAsFixed(2)}',
-        ),
-        const SizedBox(height: 24),
-        Text('Today’s tasks', style: Theme.of(context).textTheme.titleLarge),
+        const SizedBox(height: 12),
+        Text('Tasks: ${tasks.length}   Notes: ${notes.length}'),
+        Text('Habits: ${habits.length}   Planner: ${plans.length}'),
         const SizedBox(height: 8),
-        if (tasks.isEmpty)
-          const Text('No tasks yet. Add your first task.')
-        else
-          ...tasks.take(5).map(
-                (task) => Card(
-                  child: ListTile(
-                    leading: Icon(
-                      task['done'] == true
-                          ? Icons.check_circle
-                          : Icons.circle_outlined,
-                      color: const Color(0xFF167D78),
-                    ),
-                    title: Text(task['title']?.toString() ?? ''),
-                  ),
-                ),
-              ),
+        Text('Expenses: ₹${totalExpenses.toStringAsFixed(2)}'),
+        const SizedBox(height: 20),
+        const Text('Add a task from the Tasks tab using +.'),
       ],
     );
   }
@@ -376,87 +448,35 @@ class _DayMateHomeState extends State<DayMateHome> {
       appBar: AppBar(
         title: Text('dayMate · ${titles[selectedTab]}'),
         actions: [
+          IconButton(
+            tooltip: widget.isDark ? 'Switch to light theme' : 'Switch to dark theme',
+            onPressed: widget.onThemeToggle,
+            icon: Icon(widget.isDark ? Icons.light_mode : Icons.dark_mode),
+          ),
           if (selectedTab != 0)
             IconButton(
-              tooltip: 'Add',
               onPressed: addItem,
               icon: const Icon(Icons.add),
+              tooltip: 'Add',
             ),
         ],
       ),
       body: isLoading
           ? const Center(child: CircularProgressIndicator())
           : selectedTab == 0
-              ? buildDashboard()
+              ? dashboard()
               : buildItems(),
       bottomNavigationBar: NavigationBar(
         selectedIndex: selectedTab,
-        onDestinationSelected: (index) {
-          setState(() => selectedTab = index);
-        },
+        onDestinationSelected: (index) => setState(() => selectedTab = index),
         destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.home_outlined),
-            label: 'Home',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.check_circle_outline),
-            label: 'Tasks',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.calendar_month_outlined),
-            label: 'Planner',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.sticky_note_2_outlined),
-            label: 'Notes',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.account_balance_wallet_outlined),
-            label: 'Expenses',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.track_changes_outlined),
-            label: 'Habits',
-          ),
+          NavigationDestination(icon: Icon(Icons.home_outlined), label: 'Home'),
+          NavigationDestination(icon: Icon(Icons.check_circle_outline), label: 'Tasks'),
+          NavigationDestination(icon: Icon(Icons.calendar_month_outlined), label: 'Planner'),
+          NavigationDestination(icon: Icon(Icons.sticky_note_2_outlined), label: 'Notes'),
+          NavigationDestination(icon: Icon(Icons.account_balance_wallet_outlined), label: 'Expenses'),
+          NavigationDestination(icon: Icon(Icons.track_changes_outlined), label: 'Habits'),
         ],
-      ),
-      floatingActionButton: selectedTab == 0
-          ? FloatingActionButton.extended(
-              onPressed: () => setState(() => selectedTab = 1),
-              icon: const Icon(Icons.add),
-              label: const Text('New task'),
-            )
-          : null,
-    );
-  }
-}
-
-class _StatCard extends StatelessWidget {
-  const _StatCard({
-    required this.label,
-    required this.value,
-  });
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              value,
-              style: Theme.of(context).textTheme.headlineMedium,
-            ),
-            const SizedBox(height: 4),
-            Text(label),
-          ],
-        ),
       ),
     );
   }
