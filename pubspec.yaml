@@ -1,5 +1,5 @@
 name: day_mate
-description: A personal planner and productivity app.
+description: dayMate personal planner and productivity app.
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -10,6 +10,8 @@ dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
+  shared_preferences: ^2.5.3
+  intl: ^0.20.2
 
 dev_dependencies:
   flutter_test:
