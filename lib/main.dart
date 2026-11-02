@@ -1,61 +1,41 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_timezone/flutter_timezone.dart';
-import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timezone/data/latest.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
 
-final notifications = FlutterLocalNotificationsPlugin();
+import 'dart:convert';
 
-Future<void> initializeNotifications() async {
+final FlutterLocalNotificationsPlugin notifications =
+    FlutterLocalNotificationsPlugin();
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await _initializeNotifications();
+  runApp(const DayMateApp());
+}
+
+Future<void> _initializeNotifications() async {
   tz.initializeTimeZones();
 
-  final localTimezone = await FlutterTimezone.getLocalTimezone();
-  tz.setLocalLocation(tz.getLocation(localTimezone.name));
+  // flutter_timezone version in this project returns a String.
+  final String localTimezone = await FlutterTimezone.getLocalTimezone();
+  tz.setLocalLocation(tz.getLocation(localTimezone));
 
-  const settings = InitializationSettings(
-    android: AndroidInitializationSettings('@mipmap/ic_launcher'),
-  );
+  const AndroidInitializationSettings androidSettings =
+      AndroidInitializationSettings('@mipmap/ic_launcher');
+
+  const InitializationSettings settings =
+      InitializationSettings(android: androidSettings);
 
   await notifications.initialize(settings);
 
-  final android = notifications.resolvePlatformSpecificImplementation<
-      AndroidFlutterLocalNotificationsPlugin>();
-  await android?.requestNotificationsPermission();
-}
+  final androidPlugin =
+      notifications.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
 
-Future<void> scheduleReminder({
-  required int id,
-  required String title,
-  required DateTime dateTime,
-}) async {
-  if (!dateTime.isAfter(DateTime.now())) return;
-
-  await notifications.zonedSchedule(
-    id,
-    'dayMate reminder',
-    title,
-    tz.TZDateTime.from(dateTime, tz.local),
-    const NotificationDetails(
-      android: AndroidNotificationDetails(
-        'daymate_reminders',
-        'dayMate reminders',
-        channelDescription: 'Planner reminders from dayMate',
-        importance: Importance.high,
-        priority: Priority.high,
-      ),
-    ),
-    androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
-  );
-}
-
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await initializeNotifications();
-  runApp(const DayMateApp());
+  await androidPlugin?.requestNotificationsPermission();
 }
 
 class DayMateApp extends StatefulWidget {
@@ -66,418 +46,506 @@ class DayMateApp extends StatefulWidget {
 }
 
 class _DayMateAppState extends State<DayMateApp> {
-  ThemeMode themeMode = ThemeMode.light;
+  bool darkMode = false;
 
   @override
   void initState() {
     super.initState();
-    loadTheme();
+    _loadTheme();
   }
 
-  Future<void> loadTheme() async {
+  Future<void> _loadTheme() async {
     final prefs = await SharedPreferences.getInstance();
-    final isDark = prefs.getBool('isDarkTheme') ?? false;
-    if (mounted) {
-      setState(() => themeMode = isDark ? ThemeMode.dark : ThemeMode.light);
-    }
+    setState(() => darkMode = prefs.getBool('darkMode') ?? false);
   }
 
-  Future<void> toggleTheme() async {
-    final isDark = themeMode != ThemeMode.dark;
-    setState(() => themeMode = isDark ? ThemeMode.dark : ThemeMode.light);
-
+  Future<void> _toggleTheme(bool value) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('isDarkTheme', isDark);
+    await prefs.setBool('darkMode', value);
+    setState(() => darkMode = value);
   }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'dayMate',
+      title: 'DayMate',
       debugShowCheckedModeBanner: false,
-      themeMode: themeMode,
+      themeMode: darkMode ? ThemeMode.dark : ThemeMode.light,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF167D78),
-          brightness: Brightness.light,
-        ),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
         useMaterial3: true,
       ),
       darkTheme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF64C9BE),
+          seedColor: Colors.teal,
           brightness: Brightness.dark,
         ),
         useMaterial3: true,
       ),
-      home: DayMateHome(
-        isDark: themeMode == ThemeMode.dark,
-        onThemeToggle: toggleTheme,
+      home: HomePage(
+        darkMode: darkMode,
+        onThemeChanged: _toggleTheme,
       ),
     );
   }
 }
 
-class DayMateHome extends StatefulWidget {
-  const DayMateHome({
-    super.key,
-    required this.isDark,
-    required this.onThemeToggle,
+class PlannerItem {
+  PlannerItem({
+    required this.id,
+    required this.title,
+    required this.dateTime,
+    this.reminder = false,
+    this.done = false,
   });
 
-  final bool isDark;
-  final VoidCallback onThemeToggle;
+  final int id;
+  String title;
+  DateTime dateTime;
+  bool reminder;
+  bool done;
 
-  @override
-  State<DayMateHome> createState() => _DayMateHomeState();
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'title': title,
+        'dateTime': dateTime.toIso8601String(),
+        'reminder': reminder,
+        'done': done,
+      };
+
+  factory PlannerItem.fromJson(Map<String, dynamic> json) => PlannerItem(
+        id: json['id'],
+        title: json['title'],
+        dateTime: DateTime.parse(json['dateTime']),
+        reminder: json['reminder'] ?? false,
+        done: json['done'] ?? false,
+      );
 }
 
-class _DayMateHomeState extends State<DayMateHome> {
+class HomePage extends StatefulWidget {
+  const HomePage({
+    super.key,
+    required this.darkMode,
+    required this.onThemeChanged,
+  });
+
+  final bool darkMode;
+  final ValueChanged<bool> onThemeChanged;
+
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
   int selectedTab = 0;
-  bool isLoading = true;
+  final List<PlannerItem> planner = [];
+  final List<String> notes = [];
+  final List<String> habits = [];
+  final List<Map<String, dynamic>> expenses = [];
 
-  final tasks = <Map<String, dynamic>>[];
-  final plans = <Map<String, dynamic>>[];
-  final notes = <Map<String, dynamic>>[];
-  final expenses = <Map<String, dynamic>>[];
-  final habits = <Map<String, dynamic>>[];
+  final titleController = TextEditingController();
+  final noteController = TextEditingController();
+  final expenseController = TextEditingController();
 
-  final titles = ['Home', 'Tasks', 'Planner', 'Notes', 'Expenses', 'Habits'];
+  DateTime selectedDate = DateTime.now();
+  bool reminderEnabled = true;
+  double expenseTotal = 0;
 
   @override
   void initState() {
     super.initState();
-    loadData();
+    _loadData();
   }
 
-  Future<void> loadData() async {
+  @override
+  void dispose() {
+    titleController.dispose();
+    noteController.dispose();
+    expenseController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadData() async {
     final prefs = await SharedPreferences.getInstance();
 
-    List<Map<String, dynamic>> readItems(String key) {
-      final raw = prefs.getString(key);
-      if (raw == null) return [];
-      try {
-        return (jsonDecode(raw) as List)
-            .map((item) => Map<String, dynamic>.from(item as Map))
-            .toList();
-      } catch (_) {
-        return [];
-      }
+    final savedPlanner = prefs.getString('planner');
+    if (savedPlanner != null) {
+      final List<dynamic> decoded = jsonDecode(savedPlanner);
+      planner.addAll(decoded.map((e) => PlannerItem.fromJson(e)));
     }
 
-    if (!mounted) return;
-    setState(() {
-      tasks.addAll(readItems('tasks'));
-      plans.addAll(readItems('plans'));
-      notes.addAll(readItems('notes'));
-      expenses.addAll(readItems('expenses'));
-      habits.addAll(readItems('habits'));
-      isLoading = false;
-    });
+    notes.addAll(prefs.getStringList('notes') ?? []);
+    habits.addAll(prefs.getStringList('habits') ?? []);
+
+    final savedExpenses = prefs.getString('expenses');
+    if (savedExpenses != null) {
+      expenses.addAll(
+        List<Map<String, dynamic>>.from(jsonDecode(savedExpenses)),
+      );
+    }
+
+    _calculateExpenses();
+    if (mounted) setState(() {});
   }
 
-  Future<void> saveData() async {
+  Future<void> _saveData() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('tasks', jsonEncode(tasks));
-    await prefs.setString('plans', jsonEncode(plans));
-    await prefs.setString('notes', jsonEncode(notes));
+    await prefs.setString(
+      'planner',
+      jsonEncode(planner.map((e) => e.toJson()).toList()),
+    );
+    await prefs.setStringList('notes', notes);
+    await prefs.setStringList('habits', habits);
     await prefs.setString('expenses', jsonEncode(expenses));
-    await prefs.setString('habits', jsonEncode(habits));
   }
 
-  List<Map<String, dynamic>> selectedItems() {
-    switch (selectedTab) {
-      case 1:
-        return tasks;
-      case 2:
-        return plans;
-      case 3:
-        return notes;
-      case 4:
-        return expenses;
-      case 5:
-        return habits;
-      default:
-        return tasks;
+  void _calculateExpenses() {
+    expenseTotal = expenses.fold<double>(
+      0,
+      (sum, item) => sum + (item['amount'] as num).toDouble(),
+    );
+  }
+
+  Future<void> _addPlannerItem() async {
+    final title = titleController.text.trim();
+    if (title.isEmpty) return;
+
+    final item = PlannerItem(
+      id: DateTime.now().millisecondsSinceEpoch,
+      title: title,
+      dateTime: selectedDate,
+      reminder: reminderEnabled,
+    );
+
+    setState(() {
+      planner.add(item);
+      titleController.clear();
+    });
+
+    await _saveData();
+
+    if (item.reminder) {
+      await _scheduleReminder(item);
     }
   }
 
-  Future<void> addItem() async {
-    final titleController = TextEditingController();
-    final amountController = TextEditingController();
-    DateTime selectedDate = DateTime.now();
-    TimeOfDay selectedTime = TimeOfDay.now();
-    bool addReminder = true;
+  Future<void> _scheduleReminder(PlannerItem item) async {
+    if (item.dateTime.isBefore(DateTime.now())) return;
 
-    final isPlanner = selectedTab == 2;
-    final isExpense = selectedTab == 4;
-
-    final result = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: Text('Add ${titles[selectedTab]}'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: titleController,
-                  autofocus: true,
-                  decoration: InputDecoration(
-                    labelText: isExpense ? 'Expense description' : 'Title',
-                  ),
-                  textCapitalization: TextCapitalization.sentences,
-                ),
-                if (isExpense) ...[
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: amountController,
-                    keyboardType:
-                        const TextInputType.numberWithOptions(decimal: true),
-                    decoration: const InputDecoration(
-                      labelText: 'Amount',
-                      prefixText: '₹ ',
-                    ),
-                  ),
-                ],
-                if (isPlanner) ...[
-                  const SizedBox(height: 12),
-                  OutlinedButton.icon(
-                    icon: const Icon(Icons.calendar_month),
-                    label: Text(DateFormat('EEE, d MMM yyyy').format(selectedDate)),
-                    onPressed: () async {
-                      final picked = await showDatePicker(
-                        context: context,
-                        initialDate: selectedDate,
-                        firstDate: DateTime.now().subtract(
-                          const Duration(days: 1),
-                        ),
-                        lastDate: DateTime(2100),
-                      );
-                      if (picked != null) {
-                        setDialogState(() => selectedDate = picked);
-                      }
-                    },
-                  ),
-                  OutlinedButton.icon(
-                    icon: const Icon(Icons.access_time),
-                    label: Text(selectedTime.format(context)),
-                    onPressed: () async {
-                      final picked = await showTimePicker(
-                        context: context,
-                        initialTime: selectedTime,
-                      );
-                      if (picked != null) {
-                        setDialogState(() => selectedTime = picked);
-                      }
-                    },
-                  ),
-                  CheckboxListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Notify me'),
-                    value: addReminder,
-                    onChanged: (value) {
-                      setDialogState(() => addReminder = value ?? false);
-                    },
-                  ),
-                ],
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('Save'),
-            ),
-          ],
+    await notifications.zonedSchedule(
+      item.id,
+      'DayMate Reminder',
+      item.title,
+      tz.TZDateTime.from(item.dateTime, tz.local),
+      const NotificationDetails(
+        android: AndroidNotificationDetails(
+          'daymate_reminders',
+          'DayMate reminders',
+          channelDescription: 'Planner reminders',
+          importance: Importance.max,
+          priority: Priority.high,
         ),
+      ),
+      androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+      payload: item.id.toString(),
+    );
+  }
+
+  Future<void> _deletePlannerItem(PlannerItem item) async {
+    await notifications.cancel(item.id);
+    setState(() => planner.removeWhere((e) => e.id == item.id));
+    await _saveData();
+  }
+
+  Future<void> _addNote() async {
+    final text = noteController.text.trim();
+    if (text.isEmpty) return;
+    setState(() {
+      notes.add(text);
+      noteController.clear();
+    });
+    await _saveData();
+  }
+
+  Future<void> _addExpense() async {
+    final amount = double.tryParse(expenseController.text.trim());
+    if (amount == null || amount <= 0) return;
+
+    setState(() {
+      expenses.add({
+        'title': 'Expense',
+        'amount': amount,
+        'date': DateTime.now().toIso8601String(),
+      });
+      expenseController.clear();
+      _calculateExpenses();
+    });
+    await _saveData();
+  }
+
+  Future<void> _addHabit() async {
+    final controller = TextEditingController();
+    final value = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Add habit'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: 'Habit name'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('Add'),
+          ),
+        ],
       ),
     );
 
-    final title = titleController.text.trim();
-    final amount = double.tryParse(amountController.text.trim()) ?? 0;
-    titleController.dispose();
-    amountController.dispose();
+    if (value != null && value.isNotEmpty) {
+      setState(() => habits.add(value));
+      await _saveData();
+    }
+  }
 
-    if (result != true || title.isEmpty) return;
+  Future<void> _pickDateTime() async {
+    final date = await showDatePicker(
+      context: context,
+      initialDate: selectedDate,
+      firstDate: DateTime.now(),
+      lastDate: DateTime.now().add(const Duration(days: 365 * 5)),
+    );
+    if (date == null || !mounted) return;
 
-    final item = <String, dynamic>{
-      'title': title,
-      'done': false,
-      'createdAt': DateTime.now().toIso8601String(),
-    };
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(selectedDate),
+    );
+    if (time == null) return;
 
-    if (isExpense) item['amount'] = amount;
-
-    if (isPlanner) {
-      final dateTime = DateTime(
-        selectedDate.year,
-        selectedDate.month,
-        selectedDate.day,
-        selectedTime.hour,
-        selectedTime.minute,
+    setState(() {
+      selectedDate = DateTime(
+        date.year,
+        date.month,
+        date.day,
+        time.hour,
+        time.minute,
       );
-
-      item['dateTime'] = dateTime.toIso8601String();
-      item['reminder'] = addReminder;
-
-      if (addReminder && dateTime.isAfter(DateTime.now())) {
-        final id = dateTime.millisecondsSinceEpoch.remainder(2147483647);
-        await scheduleReminder(id: id, title: title, dateTime: dateTime);
-      }
-    }
-
-    setState(() => selectedItems().add(item));
-    await saveData();
-  }
-
-  Future<void> deleteItem(int index) async {
-    final items = selectedItems();
-    final item = items[index];
-
-    if (selectedTab == 2 && item['dateTime'] != null) {
-      final dateTime = DateTime.tryParse(item['dateTime'].toString());
-      if (dateTime != null) {
-        final id = dateTime.millisecondsSinceEpoch.remainder(2147483647);
-        await notifications.cancel(id);
-      }
-    }
-
-    setState(() => items.removeAt(index));
-    await saveData();
-  }
-
-  Future<void> toggleDone(int index, bool? value) async {
-    setState(() => selectedItems()[index]['done'] = value ?? false);
-    await saveData();
-  }
-
-  Widget buildItems() {
-    final items = selectedItems();
-    if (items.isEmpty) {
-      return const Center(child: Text('Nothing here yet. Tap + to add.'));
-    }
-
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: items.length,
-      itemBuilder: (context, index) {
-        final item = items[index];
-        final isCheckable = selectedTab == 1 || selectedTab == 5;
-        final isDone = item['done'] == true;
-        String subtitle = '';
-
-        if (selectedTab == 2 && item['dateTime'] != null) {
-          final dateTime = DateTime.tryParse(item['dateTime'].toString());
-          if (dateTime != null) {
-            subtitle = DateFormat('EEE, d MMM · h:mm a').format(dateTime);
-            if (item['reminder'] == true) subtitle += ' · Reminder set';
-          }
-        } else if (selectedTab == 4) {
-          final amount = (item['amount'] as num?)?.toDouble() ?? 0;
-          subtitle = '₹${amount.toStringAsFixed(2)}';
-        }
-
-        return Card(
-          child: ListTile(
-            leading: isCheckable
-                ? Checkbox(
-                    value: isDone,
-                    onChanged: (value) => toggleDone(index, value),
-                  )
-                : Icon(
-                    selectedTab == 2
-                        ? Icons.event
-                        : selectedTab == 3
-                            ? Icons.notes
-                            : selectedTab == 4
-                                ? Icons.currency_rupee
-                                : Icons.circle_outlined,
-                  ),
-            title: Text(
-              item['title']?.toString() ?? '',
-              style: TextStyle(
-                decoration: isCheckable && isDone
-                    ? TextDecoration.lineThrough
-                    : null,
-              ),
-            ),
-            subtitle: subtitle.isEmpty ? null : Text(subtitle),
-            trailing: IconButton(
-              icon: const Icon(Icons.delete_outline),
-              onPressed: () => deleteItem(index),
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Widget dashboard() {
-    final totalExpenses = expenses.fold<double>(
-      0,
-      (sum, item) => sum + ((item['amount'] as num?)?.toDouble() ?? 0),
-    );
-
-    return ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        Text(
-          'Your day, organized.',
-          style: Theme.of(context).textTheme.headlineSmall,
-        ),
-        const SizedBox(height: 12),
-        Text('Tasks: ${tasks.length}   Notes: ${notes.length}'),
-        Text('Habits: ${habits.length}   Planner: ${plans.length}'),
-        const SizedBox(height: 8),
-        Text('Expenses: ₹${totalExpenses.toStringAsFixed(2)}'),
-        const SizedBox(height: 20),
-        const Text('Add a task from the Tasks tab using +.'),
-      ],
-    );
+    });
   }
 
   @override
   Widget build(BuildContext context) {
+    final pages = [
+      _plannerPage(),
+      _notesPage(),
+      _expensesPage(),
+      _habitsPage(),
+      _settingsPage(),
+    ];
+
     return Scaffold(
       appBar: AppBar(
-        title: Text('dayMate · ${titles[selectedTab]}'),
+        title: const Text('DayMate'),
         actions: [
           IconButton(
-            tooltip: widget.isDark ? 'Switch to light theme' : 'Switch to dark theme',
-            onPressed: widget.onThemeToggle,
-            icon: Icon(widget.isDark ? Icons.light_mode : Icons.dark_mode),
+            tooltip: widget.darkMode ? 'Light theme' : 'Dark theme',
+            icon: Icon(widget.darkMode ? Icons.light_mode : Icons.dark_mode),
+            onPressed: () => widget.onThemeChanged(!widget.darkMode),
           ),
-          if (selectedTab != 0)
-            IconButton(
-              onPressed: addItem,
-              icon: const Icon(Icons.add),
-              tooltip: 'Add',
-            ),
         ],
       ),
-      body: isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : selectedTab == 0
-              ? dashboard()
-              : buildItems(),
+      body: pages[selectedTab],
       bottomNavigationBar: NavigationBar(
         selectedIndex: selectedTab,
         onDestinationSelected: (index) => setState(() => selectedTab = index),
         destinations: const [
-          NavigationDestination(icon: Icon(Icons.home_outlined), label: 'Home'),
-          NavigationDestination(icon: Icon(Icons.check_circle_outline), label: 'Tasks'),
-          NavigationDestination(icon: Icon(Icons.calendar_month_outlined), label: 'Planner'),
-          NavigationDestination(icon: Icon(Icons.sticky_note_2_outlined), label: 'Notes'),
-          NavigationDestination(icon: Icon(Icons.account_balance_wallet_outlined), label: 'Expenses'),
-          NavigationDestination(icon: Icon(Icons.track_changes_outlined), label: 'Habits'),
+          NavigationDestination(icon: Icon(Icons.event_note), label: 'Planner'),
+          NavigationDestination(icon: Icon(Icons.note_alt), label: 'Notes'),
+          NavigationDestination(icon: Icon(Icons.wallet), label: 'Expenses'),
+          NavigationDestination(icon: Icon(Icons.check_circle), label: 'Habits'),
+          NavigationDestination(icon: Icon(Icons.settings), label: 'Settings'),
         ],
       ),
+    );
+  }
+
+  Widget _plannerPage() {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        TextField(
+          controller: titleController,
+          decoration: const InputDecoration(
+            labelText: 'Planner item',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 10),
+        OutlinedButton.icon(
+          onPressed: _pickDateTime,
+          icon: const Icon(Icons.calendar_month),
+          label: Text(
+            '${selectedDate.day}/${selectedDate.month}/${selectedDate.year} '
+            '${TimeOfDay.fromDateTime(selectedDate).format(context)}',
+          ),
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Reminder notification'),
+          value: reminderEnabled,
+          onChanged: (value) => setState(() => reminderEnabled = value),
+        ),
+        FilledButton(
+          onPressed: _addPlannerItem,
+          child: const Text('Add planner item'),
+        ),
+        const SizedBox(height: 16),
+        if (planner.isEmpty) const Text('No planner items yet.'),
+        ...planner.map(
+          (item) => Card(
+            child: ListTile(
+              title: Text(
+                item.title,
+                style: TextStyle(
+                  decoration: item.done ? TextDecoration.lineThrough : null,
+                ),
+              ),
+              subtitle: Text(
+                '${item.dateTime.day}/${item.dateTime.month}/${item.dateTime.year} '
+                '${TimeOfDay.fromDateTime(item.dateTime).format(context)}'
+                '${item.reminder ? ' • Reminder on' : ''}',
+              ),
+              leading: Checkbox(
+                value: item.done,
+                onChanged: (value) async {
+                  setState(() => item.done = value ?? false);
+                  await _saveData();
+                },
+              ),
+              trailing: IconButton(
+                icon: const Icon(Icons.delete_outline),
+                onPressed: () => _deletePlannerItem(item),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _notesPage() {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        TextField(
+          controller: noteController,
+          decoration: const InputDecoration(
+            labelText: 'Write a note',
+            border: OutlineInputBorder(),
+          ),
+          minLines: 2,
+          maxLines: 4,
+        ),
+        const SizedBox(height: 10),
+        FilledButton(onPressed: _addNote, child: const Text('Save note')),
+        const SizedBox(height: 12),
+        ...notes.asMap().entries.map(
+          (entry) => Card(
+            child: ListTile(
+              title: Text(entry.value),
+              trailing: IconButton(
+                icon: const Icon(Icons.delete_outline),
+                onPressed: () async {
+                  setState(() => notes.removeAt(entry.key));
+                  await _saveData();
+                },
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _expensesPage() {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Card(
+          child: ListTile(
+            title: const Text('Total expenses'),
+            subtitle: Text('₹${expenseTotal.toStringAsFixed(2)}'),
+          ),
+        ),
+        TextField(
+          controller: expenseController,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: const InputDecoration(
+            labelText: 'Amount (₹)',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 10),
+        FilledButton(onPressed: _addExpense, child: const Text('Add expense')),
+        ...expenses.asMap().entries.map(
+          (entry) => ListTile(
+            title: const Text('Expense'),
+            trailing: Text('₹${(entry.value['amount'] as num).toStringAsFixed(2)}'),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _habitsPage() {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        FilledButton.icon(
+          onPressed: _addHabit,
+          icon: const Icon(Icons.add),
+          label: const Text('Add habit'),
+        ),
+        ...habits.asMap().entries.map(
+          (entry) => Card(
+            child: ListTile(
+              title: Text(entry.value),
+              trailing: IconButton(
+                icon: const Icon(Icons.delete_outline),
+                onPressed: () async {
+                  setState(() => habits.removeAt(entry.key));
+                  await _saveData();
+                },
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _settingsPage() {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        SwitchListTile(
+          title: const Text('Dark theme'),
+          subtitle: const Text('Switch between light and dark appearance'),
+          value: widget.darkMode,
+          onChanged: widget.onThemeChanged,
+        ),
+        const ListTile(
+          leading: Icon(Icons.notifications_active_outlined),
+          title: Text('Planner reminders'),
+          subtitle: Text('Enable reminders when adding planner items'),
+        ),
+      ],
     );
   }
 }
