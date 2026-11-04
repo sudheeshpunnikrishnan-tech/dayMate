@@ -1,41 +1,11 @@
-import 'package:flutter/material.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:flutter_timezone/flutter_timezone.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:timezone/data/latest.dart' as tz;
-import 'package:timezone/timezone.dart' as tz;
-
 import 'dart:convert';
 
-final FlutterLocalNotificationsPlugin notifications =
-    FlutterLocalNotificationsPlugin();
+import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await _initializeNotifications();
   runApp(const DayMateApp());
-}
-
-Future<void> _initializeNotifications() async {
-  tz.initializeTimeZones();
-
-  // flutter_timezone version in this project returns a String.
-  final String localTimezone = await FlutterTimezone.getLocalTimezone();
-  tz.setLocalLocation(tz.getLocation(localTimezone));
-
-  const AndroidInitializationSettings androidSettings =
-      AndroidInitializationSettings('@mipmap/ic_launcher');
-
-  const InitializationSettings settings =
-      InitializationSettings(android: androidSettings);
-
-  await notifications.initialize(settings);
-
-  final androidPlugin =
-      notifications.resolvePlatformSpecificImplementation<
-          AndroidFlutterLocalNotificationsPlugin>();
-
-  await androidPlugin?.requestNotificationsPermission();
 }
 
 class DayMateApp extends StatefulWidget {
@@ -56,12 +26,14 @@ class _DayMateAppState extends State<DayMateApp> {
 
   Future<void> _loadTheme() async {
     final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
     setState(() => darkMode = prefs.getBool('darkMode') ?? false);
   }
 
   Future<void> _toggleTheme(bool value) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('darkMode', value);
+    if (!mounted) return;
     setState(() => darkMode = value);
   }
 
@@ -113,13 +85,15 @@ class PlannerItem {
         'done': done,
       };
 
-  factory PlannerItem.fromJson(Map<String, dynamic> json) => PlannerItem(
-        id: json['id'],
-        title: json['title'],
-        dateTime: DateTime.parse(json['dateTime']),
-        reminder: json['reminder'] ?? false,
-        done: json['done'] ?? false,
-      );
+  factory PlannerItem.fromJson(Map<String, dynamic> json) {
+    return PlannerItem(
+      id: json['id'] as int,
+      title: json['title'] as String,
+      dateTime: DateTime.parse(json['dateTime'] as String),
+      reminder: json['reminder'] as bool? ?? false,
+      done: json['done'] as bool? ?? false,
+    );
+  }
 }
 
 class HomePage extends StatefulWidget {
@@ -138,6 +112,7 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   int selectedTab = 0;
+
   final List<PlannerItem> planner = [];
   final List<String> notes = [];
   final List<String> habits = [];
@@ -148,7 +123,7 @@ class _HomePageState extends State<HomePage> {
   final expenseController = TextEditingController();
 
   DateTime selectedDate = DateTime.now();
-  bool reminderEnabled = true;
+  bool reminderEnabled = false;
   double expenseTotal = 0;
 
   @override
@@ -166,33 +141,45 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _loadData() async {
-    final prefs = await SharedPreferences.getInstance();
+    try {
+      final prefs = await SharedPreferences.getInstance();
 
-    final savedPlanner = prefs.getString('planner');
-    if (savedPlanner != null) {
-      final List<dynamic> decoded = jsonDecode(savedPlanner);
-      planner.addAll(decoded.map((e) => PlannerItem.fromJson(e)));
+      final savedPlanner = prefs.getString('planner');
+      if (savedPlanner != null) {
+        final decoded = jsonDecode(savedPlanner) as List<dynamic>;
+        planner.addAll(
+          decoded.map(
+            (item) => PlannerItem.fromJson(
+              Map<String, dynamic>.from(item as Map),
+            ),
+          ),
+        );
+      }
+
+      notes.addAll(prefs.getStringList('notes') ?? []);
+      habits.addAll(prefs.getStringList('habits') ?? []);
+
+      final savedExpenses = prefs.getString('expenses');
+      if (savedExpenses != null) {
+        final decoded = jsonDecode(savedExpenses) as List<dynamic>;
+        expenses.addAll(
+          decoded.map((item) => Map<String, dynamic>.from(item as Map)),
+        );
+      }
+
+      _calculateExpenses();
+      if (mounted) setState(() {});
+    } catch (error) {
+      debugPrint('Data loading error: $error');
     }
-
-    notes.addAll(prefs.getStringList('notes') ?? []);
-    habits.addAll(prefs.getStringList('habits') ?? []);
-
-    final savedExpenses = prefs.getString('expenses');
-    if (savedExpenses != null) {
-      expenses.addAll(
-        List<Map<String, dynamic>>.from(jsonDecode(savedExpenses)),
-      );
-    }
-
-    _calculateExpenses();
-    if (mounted) setState(() {});
   }
 
   Future<void> _saveData() async {
     final prefs = await SharedPreferences.getInstance();
+
     await prefs.setString(
       'planner',
-      jsonEncode(planner.map((e) => e.toJson()).toList()),
+      jsonEncode(planner.map((item) => item.toJson()).toList()),
     );
     await prefs.setStringList('notes', notes);
     await prefs.setStringList('habits', habits);
@@ -223,43 +210,19 @@ class _HomePageState extends State<HomePage> {
     });
 
     await _saveData();
-
-    if (item.reminder) {
-      await _scheduleReminder(item);
-    }
-  }
-
-  Future<void> _scheduleReminder(PlannerItem item) async {
-    if (item.dateTime.isBefore(DateTime.now())) return;
-
-    await notifications.zonedSchedule(
-      item.id,
-      'DayMate Reminder',
-      item.title,
-      tz.TZDateTime.from(item.dateTime, tz.local),
-      const NotificationDetails(
-        android: AndroidNotificationDetails(
-          'daymate_reminders',
-          'DayMate reminders',
-          channelDescription: 'Planner reminders',
-          importance: Importance.max,
-          priority: Priority.high,
-        ),
-      ),
-      androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
-      payload: item.id.toString(),
-    );
   }
 
   Future<void> _deletePlannerItem(PlannerItem item) async {
-    await notifications.cancel(item.id);
-    setState(() => planner.removeWhere((e) => e.id == item.id));
+    setState(() {
+      planner.removeWhere((entry) => entry.id == item.id);
+    });
     await _saveData();
   }
 
   Future<void> _addNote() async {
     final text = noteController.text.trim();
     if (text.isEmpty) return;
+
     setState(() {
       notes.add(text);
       noteController.clear();
@@ -280,14 +243,16 @@ class _HomePageState extends State<HomePage> {
       expenseController.clear();
       _calculateExpenses();
     });
+
     await _saveData();
   }
 
   Future<void> _addHabit() async {
     final controller = TextEditingController();
+
     final value = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Add habit'),
         content: TextField(
           controller: controller,
@@ -296,16 +261,19 @@ class _HomePageState extends State<HomePage> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Cancel'),
           ),
           FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            onPressed: () =>
+                Navigator.pop(dialogContext, controller.text.trim()),
             child: const Text('Add'),
           ),
         ],
       ),
     );
+
+    controller.dispose();
 
     if (value != null && value.isNotEmpty) {
       setState(() => habits.add(value));
@@ -320,12 +288,14 @@ class _HomePageState extends State<HomePage> {
       firstDate: DateTime.now(),
       lastDate: DateTime.now().add(const Duration(days: 365 * 5)),
     );
+
     if (date == null || !mounted) return;
 
     final time = await showTimePicker(
       context: context,
       initialTime: TimeOfDay.fromDateTime(selectedDate),
     );
+
     if (time == null) return;
 
     setState(() {
@@ -355,7 +325,9 @@ class _HomePageState extends State<HomePage> {
         actions: [
           IconButton(
             tooltip: widget.darkMode ? 'Light theme' : 'Dark theme',
-            icon: Icon(widget.darkMode ? Icons.light_mode : Icons.dark_mode),
+            icon: Icon(
+              widget.darkMode ? Icons.light_mode : Icons.dark_mode,
+            ),
             onPressed: () => widget.onThemeChanged(!widget.darkMode),
           ),
         ],
@@ -363,13 +335,30 @@ class _HomePageState extends State<HomePage> {
       body: pages[selectedTab],
       bottomNavigationBar: NavigationBar(
         selectedIndex: selectedTab,
-        onDestinationSelected: (index) => setState(() => selectedTab = index),
+        onDestinationSelected: (index) {
+          setState(() => selectedTab = index);
+        },
         destinations: const [
-          NavigationDestination(icon: Icon(Icons.event_note), label: 'Planner'),
-          NavigationDestination(icon: Icon(Icons.note_alt), label: 'Notes'),
-          NavigationDestination(icon: Icon(Icons.wallet), label: 'Expenses'),
-          NavigationDestination(icon: Icon(Icons.check_circle), label: 'Habits'),
-          NavigationDestination(icon: Icon(Icons.settings), label: 'Settings'),
+          NavigationDestination(
+            icon: Icon(Icons.event_note),
+            label: 'Planner',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.note_alt),
+            label: 'Notes',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.wallet),
+            label: 'Expenses',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.check_circle),
+            label: 'Habits',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.settings),
+            label: 'Settings',
+          ),
         ],
       ),
     );
@@ -397,7 +386,8 @@ class _HomePageState extends State<HomePage> {
         ),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
-          title: const Text('Reminder notification'),
+          title: const Text('Reminder'),
+          subtitle: const Text('Notification reminders are temporarily disabled'),
           value: reminderEnabled,
           onChanged: (value) => setState(() => reminderEnabled = value),
         ),
@@ -413,13 +403,14 @@ class _HomePageState extends State<HomePage> {
               title: Text(
                 item.title,
                 style: TextStyle(
-                  decoration: item.done ? TextDecoration.lineThrough : null,
+                  decoration:
+                      item.done ? TextDecoration.lineThrough : null,
                 ),
               ),
               subtitle: Text(
                 '${item.dateTime.day}/${item.dateTime.month}/${item.dateTime.year} '
                 '${TimeOfDay.fromDateTime(item.dateTime).format(context)}'
-                '${item.reminder ? ' • Reminder on' : ''}',
+                '${item.reminder ? ' • Reminder selected' : ''}',
               ),
               leading: Checkbox(
                 value: item.done,
@@ -453,7 +444,10 @@ class _HomePageState extends State<HomePage> {
           maxLines: 4,
         ),
         const SizedBox(height: 10),
-        FilledButton(onPressed: _addNote, child: const Text('Save note')),
+        FilledButton(
+          onPressed: _addNote,
+          child: const Text('Save note'),
+        ),
         const SizedBox(height: 12),
         ...notes.asMap().entries.map(
           (entry) => Card(
@@ -485,18 +479,24 @@ class _HomePageState extends State<HomePage> {
         ),
         TextField(
           controller: expenseController,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          keyboardType:
+              const TextInputType.numberWithOptions(decimal: true),
           decoration: const InputDecoration(
             labelText: 'Amount (₹)',
             border: OutlineInputBorder(),
           ),
         ),
         const SizedBox(height: 10),
-        FilledButton(onPressed: _addExpense, child: const Text('Add expense')),
+        FilledButton(
+          onPressed: _addExpense,
+          child: const Text('Add expense'),
+        ),
         ...expenses.asMap().entries.map(
           (entry) => ListTile(
             title: const Text('Expense'),
-            trailing: Text('₹${(entry.value['amount'] as num).toStringAsFixed(2)}'),
+            trailing: Text(
+              '₹${(entry.value['amount'] as num).toStringAsFixed(2)}',
+            ),
           ),
         ),
       ],
@@ -543,7 +543,7 @@ class _HomePageState extends State<HomePage> {
         const ListTile(
           leading: Icon(Icons.notifications_active_outlined),
           title: Text('Planner reminders'),
-          subtitle: Text('Enable reminders when adding planner items'),
+          subtitle: Text('Notifications are temporarily disabled'),
         ),
       ],
     );
